@@ -1,0 +1,91 @@
+    if re.fullmatch(r"\d{2}\.\d", code):
+        return 3
+    if re.fullmatch(r"\d{2}\.\d{2}", code):
+        return 4
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d", code):
+        return 5
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{2}", code):
+        return 6
+    raise ClassificationError(f"unrecognized classification code shape: {code!r}")
+
+
+def _predicate_short(uri: str) -> str:
+    if uri.startswith(SKOS):
+        return "skos:" + uri[len(SKOS):]
+    if uri.startswith(XKOS):
+        return "xkos:" + uri[len(XKOS):]
+    return uri
+
+
+def _rows_from_pages(pages: Iterable[PageResult]) -> Iterable[dict[str, Any]]:
+    for page in pages:
+        yield from page.rows
+
+
+def _normalize_scheme(
+    spec: SchemeSpec,
+    scheme_uri: str,
+    item_pages: list[PageResult],
+    label_pages: list[PageResult],
+    note_pages: list[PageResult],
+) -> dict[str, Any]:
+    items_by_uri: dict[str, dict[str, Any]] = {}
+    code_to_uri: dict[str, str] = {}
+    for row in _rows_from_pages(item_pages):
+        uri = _binding_value(row, "concept")
+        code = _binding_value(row, "code")
+        parent = _binding_value(row, "parent")
+        if not uri or not code:
+            continue
+        current = items_by_uri.setdefault(uri, {"uri": uri, "code": code, "parent_uri": parent})
+        if current["code"] != code:
+            raise ClassificationError(f"concept has conflicting codes: {uri}")
+        if parent and current.get("parent_uri") not in (None, parent):
+            raise ClassificationError(f"concept has multiple direct parents: {uri}")
+        if parent:
+            current["parent_uri"] = parent
+        if code in code_to_uri and code_to_uri[code] != uri:
+            raise ClassificationError(f"duplicate code {code!r} in {spec.key}")
+        code_to_uri[code] = uri
+
+    if len(items_by_uri) != spec.expected_item_count:
+        raise ClassificationError(
+            f"{spec.key} expected {spec.expected_item_count} items, observed {len(items_by_uri)}"
+        )
+
+    labels: list[dict[str, str]] = []
+    label_seen: set[tuple[str, str, str, str]] = set()
+    for row in _rows_from_pages(label_pages):
+        uri = _binding_value(row, "concept")
+        code = _binding_value(row, "code")
+        kind_uri = _binding_value(row, "labelKind")
+        label = _binding_value(row, "label")
+        if not uri or not code or not kind_uri or label is None:
+            continue
+        if uri not in items_by_uri:
+            raise ClassificationError(f"label references unknown concept: {uri}")
+        lang = _binding_lang(row, "label")
+        kind = _predicate_short(kind_uri)
+        key = (code, lang, kind, label)
+        if key not in label_seen:
+            label_seen.add(key)
+            labels.append({"code": code, "language": lang, "kind": kind, "label": label})
+
+    notes: list[dict[str, str]] = []
+    note_seen: set[tuple[str, str, str, str]] = set()
+    for row in _rows_from_pages(note_pages):
+        uri = _binding_value(row, "concept")
+        code = _binding_value(row, "code")
+        kind_uri = _binding_value(row, "noteKind")
+        note = _binding_value(row, "note")
+        if not uri or not code or not kind_uri or note is None:
+            continue
+        if uri not in items_by_uri:
+            raise ClassificationError(f"note references unknown concept: {uri}")
+        lang = _binding_lang(row, "note")
+        kind = _predicate_short(kind_uri)
+        key = (code, lang, kind, note)
+        if key not in note_seen:
+            note_seen.add(key)
+            notes.append({"code": code, "language": lang, "kind": kind, "text": note})
+

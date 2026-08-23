@@ -1,0 +1,84 @@
+    manifest_path = raw_dir / f"manifest-{retrieved_at.replace(':', '').replace('-', '')}-{manifest_digest}.json"
+    manifest_path.write_bytes(manifest_bytes)
+
+    db_result = _write_database(
+        output_db,
+        base,
+        normalized_schemes,
+        retrieved_at=retrieved_at,
+        replace=replace,
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "retrieved_at": retrieved_at,
+        "transport": "eurostat-sdmx-codelist",
+        "source_manifest": str(manifest_path),
+        "source_manifest_sha256": manifest_digest,
+        "schemes": [x["scheme"] for x in normalized_schemes],
+        **db_result,
+    }
+
+
+def sync(catalog: Path, output_db: Path, raw_dir: Path, *, replace: bool = False) -> dict[str, Any]:
+    obj = json.loads(catalog.read_text(encoding="utf-8"))
+    schema_version = obj.get("schema_version")
+    if schema_version == "official-classification-catalog-v0.2":
+        return _sync_sdmx(catalog, output_db, raw_dir, replace=replace)
+    if schema_version == "official-classification-catalog-v0.1":
+        return _sync_cellar(catalog, output_db, raw_dir, replace=replace)
+    raise ClassificationError(f"unsupported classification catalog schema: {schema_version!r}")
+
+def status(db_path: Path) -> dict[str, Any]:
+    db_path = db_path.expanduser().resolve()
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        metadata = dict(conn.execute("SELECT key, value FROM metadata"))
+        schemes = []
+        for row in conn.execute(
+            """
+            SELECT scheme_key, system, version, scheme_uri, retrieved_at,
+                   item_count, label_count, note_count, languages_json, normalized_sha256
+            FROM classification_schemes ORDER BY scheme_key
+            """
+        ):
+            schemes.append(
+                {
+                    "key": row[0],
+                    "system": row[1],
+                    "version": row[2],
+                    "scheme_uri": row[3],
+                    "retrieved_at": row[4],
+                    "item_count": row[5],
+                    "label_count": row[6],
+                    "note_count": row[7],
+                    "languages": json.loads(row[8]),
+                    "normalized_sha256": row[9],
+                }
+            )
+        links = conn.execute("SELECT COUNT(*) FROM classification_links").fetchone()[0]
+        return {"database": str(db_path), "metadata": metadata, "schemes": schemes, "link_count": links}
+    finally:
+        conn.close()
+
+
+def search(db_path: Path, term: str, *, language: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+    if limit < 1 or limit > 200:
+        raise ClassificationError("limit must be between 1 and 200")
+    db_path = db_path.expanduser().resolve()
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        sql = """
+        SELECT l.scheme_key, s.system, s.version, l.code, l.language, l.kind, l.label, i.level, i.parent_code
+        FROM classification_labels l
+        JOIN classification_schemes s ON s.scheme_key = l.scheme_key
+        JOIN classification_items i ON i.scheme_key = l.scheme_key AND i.code = l.code
+        WHERE lower(l.label) LIKE lower(?)
+        """
+        params: list[Any] = [f"%{term}%"]
+        if language:
+            sql += " AND lower(l.language) = lower(?)"
+            params.append(language)
+        sql += " ORDER BY i.level, l.scheme_key, l.code, l.language, l.kind LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in conn.execute(sql, params)]

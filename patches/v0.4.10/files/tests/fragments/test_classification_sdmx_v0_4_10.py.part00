@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+import zse_tool.classification_backbone as cb
+
+
+STUBS = b'''<?xml version="1.0" encoding="UTF-8"?>
+<mes:Structure xmlns:mes="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message"
+               xmlns:str="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/structure"
+               xmlns:com="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/common">
+  <mes:Structures>
+    <str:Codelists>
+      <str:Codelist id="NACE_R2_1" agencyID="ESTAT" version="4.0">
+        <com:Name xml:lang="en">Statistical classification of economic activities - NACE Rev. 2.1</com:Name>
+        <com:Name xml:lang="de">Statistische Systematik der Wirtschaftszweige</com:Name>
+      </str:Codelist>
+      <str:Codelist id="CPA22" agencyID="ESTAT" version="2.0">
+        <com:Name xml:lang="en">Statistical classification of products by activity (CPA 2.2)</com:Name>
+      </str:Codelist>
+    </str:Codelists>
+  </mes:Structures>
+</mes:Structure>
+'''
+
+
+def _spec_nace() -> cb.SdmxSchemeSpec:
+    return cb.SdmxSchemeSpec(
+        key="NACE_TEST",
+        system="NACE",
+        version="2.1",
+        title_contains="classification of economic activities",
+        preferred_ids=("NACE_R2_1",),
+        expected_item_count=4,
+        expected_levels=4,
+        expected_level_counts={1: 1, 2: 1, 3: 1, 4: 1},
+    )
+
+
+def _spec_cpa() -> cb.SdmxSchemeSpec:
+    return cb.SdmxSchemeSpec(
+        key="CPA_TEST",
+        system="CPA",
+        version="2.2",
+        title_contains="classification of products by activity",
+        preferred_ids=("CPA22", "CPA_2_2"),
+        expected_item_count=6,
+        expected_levels=6,
+        expected_level_counts={1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1},
+    )
+
+
+def test_sdmx_stub_parser_and_preferred_id_resolution():
+    stubs = cb._parse_sdmx_codelist_stubs(STUBS)
+    assert {x["id"] for x in stubs} == {"NACE_R2_1", "CPA22"}
+    assert cb._resolve_sdmx_codelist(_spec_nace(), stubs)["id"] == "NACE_R2_1"
+    assert cb._resolve_sdmx_codelist(_spec_cpa(), stubs)["id"] == "CPA22"
+
+
+def test_tsv_parser_and_classification_filter_drop_statistical_aggregates():
+    rows = cb._parse_codelist_tsv(
+        b"TOTAL\tTotal\nC\tManufacturing\n27\tElectrical equipment\n27.1\tMotors, generators and transformers\n27.11\tManufacture of electric motors, generators and transformers\nB-S_X_O\tIndustry aggregate\n"
+    )
+    filtered = cb._classification_rows(rows, 4)
+    assert [code for code, _ in filtered] == ["C", "27", "27.1", "27.11"]
+
+
+def test_parent_derivation_uses_order_for_section_and_prefix_for_lower_levels():
+    codes = ["C", "27", "27.1", "27.11", "27.11.1", "27.11.11"]
+    parents = cb._derive_parent_codes(codes, 6)
+    assert parents == {
+        "C": None,
+        "27": "C",
+        "27.1": "27",
+        "27.11": "27.1",
+        "27.11.1": "27.11",
+        "27.11.11": "27.11.1",
+    }
+
+
+def test_sdmx_normalizer_preserves_three_official_languages_and_no_notes():
+    codelist = cb._parse_sdmx_codelist_stubs(STUBS)[0]
+    labels = {
+        "en": [("C", "Manufacturing"), ("27", "Electrical equipment"), ("27.1", "Motors and transformers"), ("27.11", "Manufacture of transformers")],
+        "fr": [("C", "Industrie manufacturiere"), ("27", "Equipements electriques"), ("27.1", "Moteurs et transformateurs"), ("27.11", "Fabrication de transformateurs")],
+        "de": [("C", "Verarbeitendes Gewerbe"), ("27", "Elektrische Ausruestungen"), ("27.1", "Motoren und Transformatoren"), ("27.11", "Herstellung von Transformatoren")],
+    }

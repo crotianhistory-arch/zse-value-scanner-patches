@@ -1,0 +1,44 @@
+            result = sync(args.catalog, args.output_db, args.raw_dir, replace=args.replace)
+            if args.json:
+                print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+            else:
+                print(f"Classification reference DB: {result['output_db']}")
+                print(f"SHA256: {result['sha256']}")
+                print(f"Raw manifest: {result['source_manifest']}")
+                for s in result["schemes"]:
+                    print(
+                        f"  {s['key']}: {s['item_count']} items | {s['label_count']} labels | "
+                        f"{s['note_count']} notes | {len(s['languages'])} languages"
+                    )
+                print(f"CPA→NACE structural links: {result['structural_link_count']}")
+                print("Core metadata database was not modified.")
+            return 0
+        if args.command == "status":
+            result = status(args.db)
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True) if args.json else "", end="")
+            if not args.json:
+                _print_status(result)
+            return 0
+        if args.command == "search":
+            result = search(args.db, args.term, language=args.language, limit=args.limit)
+            if args.json:
+                print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+            else:
+                for r in result:
+                    print(f"{r['scheme_key']} {r['code']} [{r['language'] or '-'}] {r['label']}")
+            return 0
+        if args.command == "show":
+            result = show_code(args.db, args.scheme, args.code)
+            if result is None:
+                print(f"not found: {args.scheme} {args.code}", file=sys.stderr)
+                return 4
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+            return 0
+    except (ClassificationError, OSError, sqlite3.Error, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

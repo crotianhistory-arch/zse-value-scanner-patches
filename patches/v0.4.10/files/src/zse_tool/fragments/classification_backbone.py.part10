@@ -1,0 +1,79 @@
+            if parent is None:
+                raise ClassificationError(f"division {code} appears before any section")
+        else:
+            parent = last_by_level.get(level - 1)
+            if parent is None:
+                raise ClassificationError(f"code {code} has no preceding level-{level - 1} parent")
+            expected_prefix = {
+                3: code[:2],
+                4: code[:4],
+                5: code[:5],
+                6: code[:7],
+            }[level]
+            if parent != expected_prefix:
+                raise ClassificationError(f"derived parent mismatch for {code}: expected {expected_prefix}, observed {parent}")
+        parents[code] = parent
+        last_by_level[level] = code
+        for deeper in list(last_by_level):
+            if deeper > level:
+                del last_by_level[deeper]
+    return parents
+
+
+def _sdmx_scheme_urn(row: dict[str, Any]) -> str:
+    if row.get("urn"):
+        return str(row["urn"])
+    agency = str(row.get("agency_id") or "ESTAT")
+    version = str(row.get("version") or "latest")
+    return f"urn:sdmx:org.sdmx.infomodel.codelist.Codelist={agency}:{row['id']}({version})"
+
+
+def _normalize_sdmx_scheme(
+    spec: SdmxSchemeSpec,
+    codelist: dict[str, Any],
+    labels_by_language: dict[str, list[tuple[str, str]]],
+) -> dict[str, Any]:
+    if "en" not in labels_by_language:
+        raise ClassificationError(f"{spec.key} requires an English codelist")
+    english_rows = _classification_rows(labels_by_language["en"], spec.expected_levels)
+    codes = [code for code, _ in english_rows]
+    if len(codes) != spec.expected_item_count:
+        raise ClassificationError(f"{spec.key} expected {spec.expected_item_count} classification items, observed {len(codes)}")
+    if len(set(codes)) != len(codes):
+        raise ClassificationError(f"{spec.key} has duplicate filtered classification codes")
+
+    level_counts: dict[int, int] = {level: 0 for level in range(1, spec.expected_levels + 1)}
+    for code in codes:
+        level_counts[_level_from_code(code)] += 1
+    if level_counts != spec.expected_level_counts:
+        raise ClassificationError(
+            f"{spec.key} level-count mismatch: expected={spec.expected_level_counts!r} observed={level_counts!r}"
+        )
+
+    code_set = set(codes)
+    filtered_by_language: dict[str, list[tuple[str, str]]] = {}
+    for language, rows in labels_by_language.items():
+        filtered = _classification_rows(rows, spec.expected_levels)
+        language_codes = [code for code, _ in filtered]
+        if set(language_codes) != code_set or len(language_codes) != len(codes):
+            missing = sorted(code_set - set(language_codes))[:5]
+            extra = sorted(set(language_codes) - code_set)[:5]
+            raise ClassificationError(
+                f"{spec.key}/{language} codelist does not match English classification code set; missing={missing!r} extra={extra!r}"
+            )
+        filtered_by_language[language] = filtered
+
+    parents = _derive_parent_codes(codes, spec.expected_levels)
+    scheme_urn = _sdmx_scheme_urn(codelist)
+    items = [
+        {
+            "code": code,
+            "uri": f"urn:sdmx:org.sdmx.infomodel.codelist.Code=ESTAT:{codelist['id']}({codelist.get('version') or 'latest'}).{code}",
+            "parent_code": parents[code],
+            "level": _level_from_code(code),
+        }
+        for code in codes
+    ]
+    labels: list[dict[str, str]] = []
+    for language in sorted(filtered_by_language):
+        for code, label in filtered_by_language[language]:

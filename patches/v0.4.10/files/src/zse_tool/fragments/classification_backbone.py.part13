@@ -1,0 +1,82 @@
+    finally:
+        conn.close()
+
+
+def show_code(db_path: Path, scheme_key: str, code: str) -> dict[str, Any] | None:
+    db_path = db_path.expanduser().resolve()
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        item = conn.execute(
+            "SELECT * FROM classification_items WHERE scheme_key = ? AND code = ?",
+            (scheme_key, code),
+        ).fetchone()
+        if item is None:
+            return None
+        labels = [dict(r) for r in conn.execute(
+            "SELECT language, kind, label FROM classification_labels WHERE scheme_key = ? AND code = ? ORDER BY language, kind, label",
+            (scheme_key, code),
+        )]
+        notes = [dict(r) for r in conn.execute(
+            "SELECT language, kind, text FROM classification_notes WHERE scheme_key = ? AND code = ? ORDER BY language, kind, text",
+            (scheme_key, code),
+        )]
+        outbound = [dict(r) for r in conn.execute(
+            """
+            SELECT target_scheme_key, target_code, relation, evidence_class, rationale
+            FROM classification_links WHERE source_scheme_key = ? AND source_code = ?
+            ORDER BY target_scheme_key, target_code
+            """,
+            (scheme_key, code),
+        )]
+        return {"item": dict(item), "labels": labels, "notes": notes, "outbound_links": outbound}
+    finally:
+        conn.close()
+
+
+def _print_status(obj: dict[str, Any]) -> None:
+    print(f"Reference database: {obj['database']}")
+    print(f"Schema: {obj['metadata'].get('schema_version')}")
+    print(f"Retrieved: {obj['metadata'].get('retrieved_at')}")
+    print(f"Structural links: {obj['link_count']}")
+    for s in obj["schemes"]:
+        print(
+            f"  {s['key']}: {s['item_count']} items | {s['label_count']} labels | "
+            f"{s['note_count']} notes | languages={len(s['languages'])}"
+        )
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Official statistical classification reference backbone")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    s = sub.add_parser("sync", help="Fetch official Eurostat classifications into a standalone SQLite reference DB")
+    s.add_argument("--catalog", type=Path, required=True)
+    s.add_argument("--output-db", type=Path, required=True)
+    s.add_argument("--raw-dir", type=Path, required=True)
+    s.add_argument("--replace", action="store_true", help="Explicitly replace an existing reference DB")
+    s.add_argument("--json", action="store_true")
+
+    st = sub.add_parser("status", help="Inspect a local reference DB without network access")
+    st.add_argument("--db", type=Path, required=True)
+    st.add_argument("--json", action="store_true")
+
+    se = sub.add_parser("search", help="Search multilingual labels in a local reference DB")
+    se.add_argument("--db", type=Path, required=True)
+    se.add_argument("term")
+    se.add_argument("--language")
+    se.add_argument("--limit", type=int, default=30)
+    se.add_argument("--json", action="store_true")
+
+    sh = sub.add_parser("show", help="Show one classification code, labels, notes and links")
+    sh.add_argument("--db", type=Path, required=True)
+    sh.add_argument("--scheme", required=True)
+    sh.add_argument("--code", required=True)
+    sh.add_argument("--json", action="store_true")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "sync":

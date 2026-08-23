@@ -1,0 +1,105 @@
+    endpoint = str(obj.get("endpoint") or "")
+    _validate_https_endpoint(endpoint)
+    specs: list[SchemeSpec] = []
+    for item in obj.get("schemes") or []:
+        specs.append(
+            SchemeSpec(
+                key=str(item["key"]),
+                system=str(item["system"]),
+                version=str(item["version"]),
+                label_contains=str(item["label_contains"]),
+                expected_item_count=int(item["expected_item_count"]),
+                expected_levels=int(item["expected_levels"]),
+            )
+        )
+    if not specs:
+        raise ClassificationError("classification catalog has no schemes")
+    if len({s.key for s in specs}) != len(specs):
+        raise ClassificationError("duplicate scheme key in catalog")
+    return endpoint, specs
+
+
+def _resolve_scheme_uri(endpoint: str, spec: SchemeSpec, raw_dir: Path) -> tuple[str, list[dict[str, Any]]]:
+    needle = spec.label_contains.replace('"', '\\"')
+    version = spec.version.replace('"', '\\"')
+    query = f"""
+PREFIX skos: <{SKOS}>
+PREFIX owl: <{OWL}>
+SELECT DISTINCT ?scheme ?label ?version WHERE {{
+  ?scheme a skos:ConceptScheme .
+  OPTIONAL {{ ?scheme skos:prefLabel ?label . }}
+  OPTIONAL {{ ?scheme owl:versionInfo ?version . }}
+  FILTER(CONTAINS(LCASE(STR(?label)), LCASE(\"{needle}\")))
+  FILTER(CONTAINS(LCASE(CONCAT(STR(?label), \" \" , STR(?version))), LCASE(\"{version}\")))
+}}
+ORDER BY ?scheme
+""".strip()
+    data = _sparql_request(endpoint, query)
+    raw_path, digest = _write_raw(raw_dir, spec.key, "scheme-discovery", 0, data)
+    rows = _parse_sparql_json(data)
+    candidates: list[str] = []
+    audit: list[dict[str, Any]] = []
+    for row in rows:
+        uri = _binding_value(row, "scheme")
+        label = _binding_value(row, "label")
+        found_version = _binding_value(row, "version")
+        if uri:
+            candidates.append(uri)
+            audit.append({"scheme_uri": uri, "label": label, "version": found_version})
+    candidates = sorted(set(candidates))
+    if len(candidates) != 1:
+        raise ClassificationError(
+            f"could not resolve exactly one scheme for {spec.key}; candidates={candidates!r}; raw={raw_path}; sha256={digest}"
+        )
+    return candidates[0], audit
+
+
+def _items_query(scheme_uri: str) -> str:
+    return f"""
+PREFIX skos: <{SKOS}>
+SELECT DISTINCT ?concept ?code ?parent WHERE {{
+  ?concept a skos:Concept ; skos:inScheme <{scheme_uri}> ; skos:notation ?code .
+  OPTIONAL {{ ?concept skos:broader ?parent . }}
+}}
+ORDER BY ?code ?concept ?parent
+""".strip()
+
+
+def _labels_query(scheme_uri: str) -> str:
+    return f"""
+PREFIX skos: <{SKOS}>
+SELECT DISTINCT ?concept ?code ?labelKind ?label WHERE {{
+  ?concept a skos:Concept ; skos:inScheme <{scheme_uri}> ; skos:notation ?code .
+  VALUES ?labelKind {{ skos:prefLabel skos:altLabel }}
+  ?concept ?labelKind ?label .
+}}
+ORDER BY ?code ?labelKind ?label
+""".strip()
+
+
+def _notes_query(scheme_uri: str) -> str:
+    return f"""
+PREFIX skos: <{SKOS}>
+PREFIX xkos: <{XKOS}>
+SELECT DISTINCT ?concept ?code ?noteKind ?note WHERE {{
+  ?concept a skos:Concept ; skos:inScheme <{scheme_uri}> ; skos:notation ?code .
+  VALUES ?noteKind {{
+    skos:scopeNote
+    xkos:inclusionNote
+    xkos:coreContentNote
+    xkos:additionalContentNote
+    xkos:exclusionNote
+  }}
+  ?concept ?noteKind ?note .
+  FILTER(LANG(?note) = \"\" || LANGMATCHES(LANG(?note), \"en\"))
+}}
+ORDER BY ?code ?noteKind ?note
+""".strip()
+
+
+def _level_from_code(code: str) -> int:
+    code = code.strip()
+    if re.fullmatch(r"[A-Z]", code):
+        return 1
+    if re.fullmatch(r"\d{2}", code):
+        return 2

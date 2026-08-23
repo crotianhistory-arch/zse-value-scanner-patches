@@ -1,0 +1,21 @@
+            "fr": "C\tProduits manufactures\n27\tEquipements electriques\n27.1\tMoteurs et transformateurs\n27.11\tMoteurs et transformateurs\n27.11.1\tMoteurs\n27.11.11\tTransformateurs\nTOTAL\tTotal\n",
+            "de": "C\tErzeugnisse\n27\tElektrische Ausruestungen\n27.1\tMotoren und Transformatoren\n27.11\tMotoren und Transformatoren\n27.11.1\tMotoren\n27.11.11\tTransformatoren\nTOTAL\tInsgesamt\n",
+        },
+    }
+
+    def fake_get(url: str, *, accept: str, timeout: float = 60.0) -> bytes:
+        if "all/latest?detail=allstubs" in url:
+            return STUBS
+        codelist_id = "NACE_R2_1" if "/NACE_R2_1/" in url else "CPA22"
+        lang = url.rsplit("lang=", 1)[1]
+        return labels[codelist_id][lang].encode()
+
+    monkeypatch.setattr(cb, "_http_get", fake_get)
+    db = tmp_path / "ref.sqlite"
+    result = cb.sync(catalog, db, tmp_path / "raw")
+    assert result["transport"] == "eurostat-sdmx-codelist"
+    assert result["structural_link_count"] == 6
+    assert cb.search(db, "Transformatoren", language="de")
+    shown = cb.show_code(db, "CPA_2_2", "27.11.11")
+    assert shown is not None
+    assert shown["outbound_links"][0]["target_code"] == "27.11"

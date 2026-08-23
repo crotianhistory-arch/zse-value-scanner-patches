@@ -1,0 +1,75 @@
+            labels.append({"code": code, "language": language, "kind": "sdmx:Name", "label": label})
+    labels.sort(key=lambda x: (x["code"], x["language"], x["label"]))
+    notes: list[dict[str, str]] = []
+    digest_payload = {"scheme_uri": scheme_urn, "items": items, "labels": labels, "notes": notes}
+    return {
+        "scheme": {
+            "key": spec.key,
+            "system": spec.system,
+            "version": spec.version,
+            "scheme_uri": scheme_urn,
+            "item_count": len(items),
+            "label_count": len(labels),
+            "note_count": 0,
+            "languages": sorted(filtered_by_language),
+            "normalized_sha256": _sha256_bytes(_canonical_json_bytes(digest_payload)),
+            "source_codelist_id": codelist["id"],
+            "source_codelist_version": codelist.get("version") or "",
+        },
+        "items": items,
+        "labels": labels,
+        "notes": notes,
+    }
+
+
+def _sync_sdmx(catalog: Path, output_db: Path, raw_dir: Path, *, replace: bool = False) -> dict[str, Any]:
+    base, languages, specs = _catalog_v2_from_path(catalog)
+    raw_dir = raw_dir.expanduser().resolve()
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    retrieved_at = _utc_now()
+
+    stubs_url = f"{base}/codelist/ESTAT/all/latest?detail=allstubs"
+    stubs_data = _http_get(stubs_url, accept="application/vnd.sdmx.structure+xml;version=2.1")
+    stubs_path, stubs_sha = _write_raw_blob(raw_dir, "EUROSTAT_SDMX", "codelist-stubs", stubs_data, "xml")
+    stubs = _parse_sdmx_codelist_stubs(stubs_data)
+
+    normalized_schemes: list[dict[str, Any]] = []
+    source_manifest: dict[str, Any] = {
+        "schema_version": "official-classification-raw-manifest-v0.2",
+        "retrieved_at": retrieved_at,
+        "transport": "eurostat-sdmx-codelist",
+        "endpoint": base,
+        "stubs": {"url": stubs_url, "raw_path": stubs_path, "sha256": stubs_sha, "codelist_count": len(stubs)},
+        "schemes": [],
+    }
+
+    for spec in specs:
+        codelist = _resolve_sdmx_codelist(spec, stubs)
+        labels_by_language: dict[str, list[tuple[str, str]]] = {}
+        raw_languages: list[dict[str, Any]] = []
+        for language in languages:
+            codelist_id = quote(str(codelist["id"]), safe="")
+            url = f"{base}/codelist/ESTAT/{codelist_id}/latest?format=TSV&lang={quote(language, safe='')}"
+            data = _http_get(url, accept="text/tab-separated-values,text/plain;q=0.9,*/*;q=0.1")
+            path, digest = _write_raw_blob(raw_dir, spec.key, f"labels-{language}", data, "tsv")
+            labels_by_language[language] = _parse_codelist_tsv(data)
+            raw_languages.append({"language": language, "url": url, "raw_path": path, "sha256": digest})
+
+        normalized = _normalize_sdmx_scheme(spec, codelist, labels_by_language)
+        normalized_schemes.append(normalized)
+        source_manifest["schemes"].append(
+            {
+                "key": spec.key,
+                "system": spec.system,
+                "version": spec.version,
+                "codelist_id": codelist["id"],
+                "codelist_version": codelist.get("version") or "",
+                "codelist_names": codelist.get("names", {}),
+                "languages": raw_languages,
+                "normalized": normalized["scheme"],
+                "notes_status": "not_in_core_sdmx_codelist_snapshot",
+            }
+        )
+
+    manifest_bytes = _canonical_json_bytes(source_manifest)
+    manifest_digest = _sha256_bytes(manifest_bytes)

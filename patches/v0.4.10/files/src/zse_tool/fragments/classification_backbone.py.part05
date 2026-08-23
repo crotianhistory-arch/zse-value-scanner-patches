@@ -1,0 +1,90 @@
+            code TEXT NOT NULL,
+            language TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            text TEXT NOT NULL,
+            PRIMARY KEY (scheme_key, code, language, kind, text),
+            FOREIGN KEY (scheme_key, code) REFERENCES classification_items(scheme_key, code)
+        );
+        CREATE TABLE classification_links (
+            source_scheme_key TEXT NOT NULL,
+            source_code TEXT NOT NULL,
+            target_scheme_key TEXT NOT NULL,
+            target_code TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            evidence_class TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            PRIMARY KEY (source_scheme_key, source_code, target_scheme_key, target_code, relation),
+            FOREIGN KEY (source_scheme_key, source_code) REFERENCES classification_items(scheme_key, code),
+            FOREIGN KEY (target_scheme_key, target_code) REFERENCES classification_items(scheme_key, code)
+        );
+        CREATE INDEX idx_labels_search ON classification_labels(language, label);
+        CREATE INDEX idx_items_parent ON classification_items(scheme_key, parent_code);
+        CREATE INDEX idx_links_target ON classification_links(target_scheme_key, target_code);
+        """
+    )
+
+
+def _cpa_to_nace_code(cpa_code: str, level: int) -> str | None:
+    if level <= 4:
+        return cpa_code
+    match = re.fullmatch(r"(\d{2}\.\d{2})\.\d{1,2}", cpa_code)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _insert_structural_links(conn: sqlite3.Connection) -> int:
+    scheme_rows = conn.execute(
+        "SELECT scheme_key, system, version FROM classification_schemes"
+    ).fetchall()
+    current_nace = next((r[0] for r in scheme_rows if r[1] == "NACE" and r[2] == "2.1"), None)
+    current_cpa = next((r[0] for r in scheme_rows if r[1] == "CPA" and r[2] == "2.2"), None)
+    if not current_nace or not current_cpa:
+        return 0
+
+    nace_codes = {r[0] for r in conn.execute(
+        "SELECT code FROM classification_items WHERE scheme_key = ?", (current_nace,)
+    )}
+    links = []
+    for code, level in conn.execute(
+        "SELECT code, level FROM classification_items WHERE scheme_key = ?", (current_cpa,)
+    ):
+        target = _cpa_to_nace_code(code, level)
+        if target and target in nace_codes:
+            links.append(
+                (
+                    current_cpa,
+                    code,
+                    current_nace,
+                    target,
+                    "CPA_STRUCTURAL_ORIGIN_NACE",
+                    "D1_DETERMINISTIC_FROM_OFFICIAL_STRUCTURE",
+                    "CPA 2.2 is structured on NACE Rev. 2.1; through class level codes correspond, and CPA categories/subcategories inherit the first four-digit NACE class.",
+                )
+            )
+    conn.executemany(
+        """
+        INSERT INTO classification_links (
+            source_scheme_key, source_code, target_scheme_key, target_code,
+            relation, evidence_class, rationale
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        links,
+    )
+    return len(links)
+
+
+def _write_database(
+    output_db: Path,
+    endpoint: str,
+    normalized_schemes: list[dict[str, Any]],
+    *,
+    retrieved_at: str,
+    replace: bool,
+) -> dict[str, Any]:
+    output_db = output_db.expanduser().resolve()
+    output_db.parent.mkdir(parents=True, exist_ok=True)
+    if output_db.exists() and not replace:
+        raise ClassificationError(f"output database already exists; pass --replace explicitly: {output_db}")
+
+    tmp = output_db.with_suffix(output_db.suffix + f".tmp-{os.getpid()}")

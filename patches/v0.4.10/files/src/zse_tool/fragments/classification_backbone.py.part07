@@ -1,0 +1,85 @@
+    for spec in specs:
+        scheme_uri, discovery_audit = _resolve_scheme_uri(endpoint, spec, raw_dir)
+        item_pages = _paged_query(
+            endpoint,
+            _items_query(scheme_uri),
+            raw_dir=raw_dir,
+            scheme_key=spec.key,
+            query_kind="items",
+        )
+        label_pages = _paged_query(
+            endpoint,
+            _labels_query(scheme_uri),
+            raw_dir=raw_dir,
+            scheme_key=spec.key,
+            query_kind="labels",
+        )
+        note_pages = _paged_query(
+            endpoint,
+            _notes_query(scheme_uri),
+            raw_dir=raw_dir,
+            scheme_key=spec.key,
+            query_kind="notes-en",
+        )
+        normalized = _normalize_scheme(spec, scheme_uri, item_pages, label_pages, note_pages)
+        normalized["scheme"]["key"] = spec.key
+        normalized_schemes.append(normalized)
+        source_manifest["schemes"].append(
+            {
+                "key": spec.key,
+                "scheme_uri": scheme_uri,
+                "discovery": discovery_audit,
+                "item_pages": [p.__dict__ | {"rows": len(p.rows)} for p in item_pages],
+                "label_pages": [p.__dict__ | {"rows": len(p.rows)} for p in label_pages],
+                "note_pages": [p.__dict__ | {"rows": len(p.rows)} for p in note_pages],
+                "normalized": normalized["scheme"],
+            }
+        )
+
+    # Avoid embedding the full parsed row arrays in the manifest.
+    for scheme in source_manifest["schemes"]:
+        for page_key in ("item_pages", "label_pages", "note_pages"):
+            for page in scheme[page_key]:
+                page.pop("rows", None) if isinstance(page.get("rows"), list) else None
+
+    manifest_bytes = _canonical_json_bytes(source_manifest)
+    manifest_digest = _sha256_bytes(manifest_bytes)
+    manifest_path = raw_dir / f"manifest-{retrieved_at.replace(':', '').replace('-', '')}-{manifest_digest}.json"
+    manifest_path.write_bytes(manifest_bytes)
+
+    db_result = _write_database(
+        output_db,
+        endpoint,
+        normalized_schemes,
+        retrieved_at=retrieved_at,
+        replace=replace,
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "retrieved_at": retrieved_at,
+        "source_manifest": str(manifest_path),
+        "source_manifest_sha256": manifest_digest,
+        "schemes": [x["scheme"] for x in normalized_schemes],
+        **db_result,
+    }
+
+
+
+def _catalog_v2_from_path(path: Path) -> tuple[str, tuple[str, ...], list[SdmxSchemeSpec]]:
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    if obj.get("schema_version") != "official-classification-catalog-v0.2":
+        raise ClassificationError("unsupported SDMX classification catalog schema")
+    if obj.get("transport") != "eurostat-sdmx-codelist":
+        raise ClassificationError("unsupported classification catalog transport")
+    base = str(obj.get("sdmx_base") or "").rstrip("/")
+    _validate_https_endpoint(base)
+    languages = tuple(str(x).lower() for x in (obj.get("languages") or []))
+    if not languages or len(set(languages)) != len(languages):
+        raise ClassificationError("SDMX catalog languages must be a non-empty unique list")
+    if any(not re.fullmatch(r"[a-z]{2}", x) for x in languages):
+        raise ClassificationError("SDMX catalog language codes must be two lowercase letters")
+
+    specs: list[SdmxSchemeSpec] = []
+    for item in obj.get("schemes") or []:
+        level_counts = {int(k): int(v) for k, v in (item.get("expected_level_counts") or {}).items()}
+        specs.append(

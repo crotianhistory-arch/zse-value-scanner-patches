@@ -1,0 +1,88 @@
+                "agency_id": str(elem.attrib.get("agencyID") or "ESTAT"),
+                "version": str(elem.attrib.get("version") or ""),
+                "urn": str(elem.attrib.get("urn") or ""),
+                "names": names,
+            }
+        )
+    if not out:
+        raise ClassificationError("SDMX codelist stub response contains no codelists")
+    return out
+
+
+def _resolve_sdmx_codelist(spec: SdmxSchemeSpec, stubs: list[dict[str, Any]]) -> dict[str, Any]:
+    by_id = {str(row["id"]).upper(): row for row in stubs}
+    preferred = [by_id[x.upper()] for x in spec.preferred_ids if x.upper() in by_id]
+    unique_preferred = {row["id"]: row for row in preferred}
+    if len(unique_preferred) == 1:
+        return next(iter(unique_preferred.values()))
+    if len(unique_preferred) > 1:
+        raise ClassificationError(f"{spec.key} matched multiple preferred codelist IDs: {sorted(unique_preferred)}")
+
+    needle = spec.title_contains.casefold()
+    version_token = spec.version.casefold()
+    candidates: list[dict[str, Any]] = []
+    for row in stubs:
+        text = " ".join(row.get("names", {}).values()).casefold()
+        if needle in text and (version_token in text or version_token in str(row.get("id", "")).casefold()):
+            candidates.append(row)
+    if len(candidates) != 1:
+        audit = [
+            {"id": row["id"], "version": row.get("version"), "names": row.get("names", {})}
+            for row in stubs
+            if needle in " ".join(row.get("names", {}).values()).casefold()
+        ]
+        raise ClassificationError(
+            f"could not resolve exactly one SDMX codelist for {spec.key}; candidates={[(x['id'], x.get('version')) for x in candidates]!r}; title_matches={audit[:12]!r}"
+        )
+    return candidates[0]
+
+
+def _parse_codelist_tsv(data: bytes) -> list[tuple[str, str]]:
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ClassificationError(f"invalid UTF-8 codelist TSV: {exc}") from exc
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        if "\t" not in raw_line:
+            raise ClassificationError(f"invalid codelist TSV line {lineno}: missing tab")
+        code, label = raw_line.split("\t", 1)
+        code = code.strip()
+        label = label.strip()
+        if not code or not label:
+            raise ClassificationError(f"invalid codelist TSV line {lineno}: empty code or label")
+        if code in seen:
+            raise ClassificationError(f"duplicate codelist TSV code: {code}")
+        seen.add(code)
+        rows.append((code, label))
+    if not rows:
+        raise ClassificationError("codelist TSV has no rows")
+    return rows
+
+
+def _classification_rows(rows: list[tuple[str, str]], expected_levels: int) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for code, label in rows:
+        try:
+            level = _level_from_code(code)
+        except ClassificationError:
+            continue
+        if level <= expected_levels:
+            out.append((code, label))
+    return out
+
+
+def _derive_parent_codes(codes: list[str], expected_levels: int) -> dict[str, str | None]:
+    parents: dict[str, str | None] = {}
+    last_by_level: dict[int, str] = {}
+    for code in codes:
+        level = _level_from_code(code)
+        if level > expected_levels:
+            continue
+        if level == 1:
+            parent = None
+        elif level == 2:
+            parent = last_by_level.get(1)

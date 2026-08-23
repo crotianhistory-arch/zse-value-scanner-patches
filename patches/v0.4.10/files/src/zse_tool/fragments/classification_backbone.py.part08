@@ -1,0 +1,85 @@
+            SdmxSchemeSpec(
+                key=str(item["key"]),
+                system=str(item["system"]),
+                version=str(item["version"]),
+                title_contains=str(item["title_contains"]),
+                preferred_ids=tuple(str(x) for x in (item.get("preferred_ids") or [])),
+                expected_item_count=int(item["expected_item_count"]),
+                expected_levels=int(item["expected_levels"]),
+                expected_level_counts=level_counts,
+            )
+        )
+    if not specs:
+        raise ClassificationError("SDMX classification catalog has no schemes")
+    if len({s.key for s in specs}) != len(specs):
+        raise ClassificationError("duplicate scheme key in SDMX catalog")
+    for spec in specs:
+        if set(spec.expected_level_counts) != set(range(1, spec.expected_levels + 1)):
+            raise ClassificationError(f"{spec.key} expected_level_counts must cover every level")
+        if sum(spec.expected_level_counts.values()) != spec.expected_item_count:
+            raise ClassificationError(f"{spec.key} expected level counts do not sum to expected_item_count")
+    return base, languages, specs
+
+
+def _http_get(url: str, *, accept: str, timeout: float = 60.0) -> bytes:
+    _validate_https_endpoint(url)
+    request = Request(
+        url,
+        method="GET",
+        headers={"Accept": accept, "User-Agent": "zse-value-scanner/0.4.10 classification-backbone"},
+    )
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=timeout) as response:  # nosec B310 - URL is validated above
+                status_code = getattr(response, "status", 200)
+                if status_code != 200:
+                    raise ClassificationError(f"classification endpoint returned HTTP {status_code}")
+                return _read_bounded(response)
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    raise ClassificationError(f"classification GET failed after retries: {last_error}")
+
+
+def _write_raw_blob(raw_dir: Path, scope: str, kind: str, data: bytes, suffix: str) -> tuple[str, str]:
+    digest = _sha256_bytes(data)
+    dst_dir = raw_dir / _safe_component(scope) / _safe_component(kind)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "." + suffix.lstrip(".")
+    path = dst_dir / f"{digest}{suffix}"
+    if not path.exists():
+        tmp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    return str(path), digest
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_sdmx_codelist_stubs(data: bytes) -> list[dict[str, Any]]:
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise ClassificationError(f"invalid SDMX codelist XML: {exc}") from exc
+    xml_lang = "{http://www.w3.org/XML/1998/namespace}lang"
+    out: list[dict[str, Any]] = []
+    for elem in root.iter():
+        if _local_name(elem.tag) != "Codelist":
+            continue
+        codelist_id = str(elem.attrib.get("id") or "")
+        if not codelist_id:
+            continue
+        names: dict[str, str] = {}
+        for child in elem:
+            if _local_name(child.tag) != "Name":
+                continue
+            value = (child.text or "").strip()
+            if value:
+                names[str(child.attrib.get(xml_lang) or "").lower()] = value
+        out.append(
+            {
+                "id": codelist_id,
