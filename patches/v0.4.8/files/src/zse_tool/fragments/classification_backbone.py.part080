@@ -1,0 +1,25 @@
+arch multilingual labels in a local reference DB")
+    se.add_argument("--db", type=Path, required=True)
+    se.add_argument("term")
+    se.add_argument("--language")
+    se.add_argument("--limit", type=int, default=30)
+    se.add_argument("--json", action="store_true")
+
+    sh = sub.add_parser("show", help="Show one classification code, labels, notes and links")
+    sh.add_argument("--db", type=Path, required=True)
+    sh.add_argument("--scheme", required=True)
+    sh.add_argument("--code", required=True)
+    sh.add_argument("--json", action="store_true")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "sync":
+            result = sync(args.catalog, args.output_db, args.raw_dir, replace=args.replace)
+            if args.json:
+                print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+            else:
+                print(f"Classification reference DB: {result['output_db']}")
+               

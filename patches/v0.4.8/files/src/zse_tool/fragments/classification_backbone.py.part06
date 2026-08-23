@@ -1,0 +1,106 @@
+w_dir = raw_dir.expanduser().resolve()
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    retrieved_at = _utc_now()
+    normalized_schemes: list[dict[str, Any]] = []
+    source_manifest: dict[str, Any] = {
+        "schema_version": "official-classification-raw-manifest-v0.1",
+        "retrieved_at": retrieved_at,
+        "endpoint": endpoint,
+        "schemes": [],
+    }
+
+    for spec in specs:
+        scheme_uri, discovery_audit = _resolve_scheme_uri(endpoint, spec, raw_dir)
+        item_pages = _paged_query(
+            endpoint,
+            _items_query(scheme_uri),
+            raw_dir=raw_dir,
+            scheme_key=spec.key,
+            query_kind="items",
+        )
+        label_pages = _paged_query(
+            endpoint,
+            _labels_query(scheme_uri),
+            raw_dir=raw_dir,
+            scheme_key=spec.key,
+            query_kind="labels",
+        )
+        note_pages = _paged_query(
+            endpoint,
+            _notes_query(scheme_uri),
+            raw_dir=raw_dir,
+            scheme_key=spec.key,
+            query_kind="notes-en",
+        )
+        normalized = _normalize_scheme(spec, scheme_uri, item_pages, label_pages, note_pages)
+        normalized["scheme"]["key"] = spec.key
+        normalized_schemes.append(normalized)
+        source_manifest["schemes"].append(
+            {
+                "key": spec.key,
+                "scheme_uri": scheme_uri,
+                "discovery": discovery_audit,
+                "item_pages": [p.__dict__ | {"rows": len(p.rows)} for p in item_pages],
+                "label_pages": [p.__dict__ | {"rows": len(p.rows)} for p in label_pages],
+                "note_pages": [p.__dict__ | {"rows": len(p.rows)} for p in note_pages],
+                "normalized": normalized["scheme"],
+            }
+        )
+
+    # Avoid embedding the full parsed row arrays in the manifest.
+    for scheme in source_manifest["schemes"]:
+        for page_key in ("item_pages", "label_pages", "note_pages"):
+            for page in scheme[page_key]:
+                page.pop("rows", None) if isinstance(page.get("rows"), list) else None
+
+    manifest_bytes = _canonical_json_bytes(source_manifest)
+    manifest_digest = _sha256_bytes(manifest_bytes)
+    manifest_path = raw_dir / f"manifest-{retrieved_at.replace(':', '').replace('-', '')}-{manifest_digest}.json"
+    manifest_path.write_bytes(manifest_bytes)
+
+    db_result = _write_database(
+        output_db,
+        endpoint,
+        normalized_schemes,
+        retrieved_at=retrieved_at,
+        replace=replace,
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "retrieved_at": retrieved_at,
+        "source_manifest": str(manifest_path),
+        "source_manifest_sha256": manifest_digest,
+        "schemes": [x["scheme"] for x in normalized_schemes],
+        **db_result,
+    }
+
+
+def status(db_path: Path) -> dict[str, Any]:
+    db_path = db_path.expanduser().resolve()
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        metadata = dict(conn.execute("SELECT key, value FROM metadata"))
+        schemes = []
+        for row in conn.execute(
+            """
+            SELECT scheme_key, system, version, scheme_uri, retrieved_at,
+                   item_count, label_count, note_count, languages_json, normalized_sha256
+            FROM classification_schemes ORDER BY scheme_key
+            """
+        ):
+            schemes.append(
+                {
+                    "key": row[0],
+                    "system": row[1],
+                    "version": row[2],
+                    "scheme_uri": row[3],
+                    "retrieved_at": row[4],
+                    "item_count": row[5],
+                    "label_count": row[6],
+                    "note_count": row[7],
+                    "languages": json.loads(row[8]),
+                    "normalized_sha256": row[9],
+                }
+            )
+        links = conn.execute("SELECT COUNT(*) FROM classification_links").fetchone()[0]
+        return {"database": 

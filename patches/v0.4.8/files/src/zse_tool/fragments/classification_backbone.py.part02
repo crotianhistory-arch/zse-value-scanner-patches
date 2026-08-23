@@ -1,0 +1,120 @@
+rows = _parse_sparql_json(data)
+    candidates: list[str] = []
+    audit: list[dict[str, Any]] = []
+    for row in rows:
+        uri = _binding_value(row, "scheme")
+        label = _binding_value(row, "label")
+        found_version = _binding_value(row, "version")
+        if uri:
+            candidates.append(uri)
+            audit.append({"scheme_uri": uri, "label": label, "version": found_version})
+    candidates = sorted(set(candidates))
+    if len(candidates) != 1:
+        raise ClassificationError(
+            f"could not resolve exactly one scheme for {spec.key}; candidates={candidates!r}; raw={raw_path}; sha256={digest}"
+        )
+    return candidates[0], audit
+
+
+def _items_query(scheme_uri: str) -> str:
+    return f"""
+PREFIX skos: <{SKOS}>
+SELECT DISTINCT ?concept ?code ?parent WHERE {{
+  ?concept a skos:Concept ; skos:inScheme <{scheme_uri}> ; skos:notation ?code .
+  OPTIONAL {{ ?concept skos:broader ?parent . }}
+}}
+ORDER BY ?code ?concept ?parent
+""".strip()
+
+
+def _labels_query(scheme_uri: str) -> str:
+    return f"""
+PREFIX skos: <{SKOS}>
+SELECT DISTINCT ?concept ?code ?labelKind ?label WHERE {{
+  ?concept a skos:Concept ; skos:inScheme <{scheme_uri}> ; skos:notation ?code .
+  VALUES ?labelKind {{ skos:prefLabel skos:altLabel }}
+  ?concept ?labelKind ?label .
+}}
+ORDER BY ?code ?labelKind ?label
+""".strip()
+
+
+def _notes_query(scheme_uri: str) -> str:
+    return f"""
+PREFIX skos: <{SKOS}>
+PREFIX xkos: <{XKOS}>
+SELECT DISTINCT ?concept ?code ?noteKind ?note WHERE {{
+  ?concept a skos:Concept ; skos:inScheme <{scheme_uri}> ; skos:notation ?code .
+  VALUES ?noteKind {{
+    skos:scopeNote
+    xkos:inclusionNote
+    xkos:coreContentNote
+    xkos:additionalContentNote
+    xkos:exclusionNote
+  }}
+  ?concept ?noteKind ?note .
+  FILTER(LANG(?note) = \"\" || LANGMATCHES(LANG(?note), \"en\"))
+}}
+ORDER BY ?code ?noteKind ?note
+""".strip()
+
+
+def _level_from_code(code: str) -> int:
+    code = code.strip()
+    if re.fullmatch(r"[A-Z]", code):
+        return 1
+    if re.fullmatch(r"\d{2}", code):
+        return 2
+    if re.fullmatch(r"\d{2}\.\d", code):
+        return 3
+    if re.fullmatch(r"\d{2}\.\d{2}", code):
+        return 4
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d", code):
+        return 5
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{2}", code):
+        return 6
+    raise ClassificationError(f"unrecognized classification code shape: {code!r}")
+
+
+def _predicate_short(uri: str) -> str:
+    if uri.startswith(SKOS):
+        return "skos:" + uri[len(SKOS):]
+    if uri.startswith(XKOS):
+        return "xkos:" + uri[len(XKOS):]
+    return uri
+
+
+def _rows_from_pages(pages: Iterable[PageResult]) -> Iterable[dict[str, Any]]:
+    for page in pages:
+        yield from page.rows
+
+
+def _normalize_scheme(
+    spec: SchemeSpec,
+    scheme_uri: str,
+    item_pages: list[PageResult],
+    label_pages: list[PageResult],
+    note_pages: list[PageResult],
+) -> dict[str, Any]:
+    items_by_uri: dict[str, dict[str, Any]] = {}
+    code_to_uri: dict[str, str] = {}
+    for row in _rows_from_pages(item_pages):
+        uri = _binding_value(row, "concept")
+        code = _binding_value(row, "code")
+        parent = _binding_value(row, "parent")
+        if not uri or not code:
+            continue
+        current = items_by_uri.setdefault(uri, {"uri": uri, "code": code, "parent_uri": parent})
+        if current["code"] != code:
+            raise ClassificationError(f"concept has conflicting codes: {uri}")
+        if parent and current.get("parent_uri") not in (None, parent):
+            raise ClassificationError(f"concept has multiple direct parents: {uri}")
+        if parent:
+            current["parent_uri"] = parent
+        if code in code_to_uri and code_to_uri[code] != uri:
+            raise ClassificationError(f"duplicate code {code!r} in {spec.key}")
+        code_to_uri[code] = uri
+
+    if len(items_by_uri) != spec.expected_item_count:
+        raise ClassificationError(
+            f"{spec.key} expected {spec.expected_item_count} items, observed {len(items_

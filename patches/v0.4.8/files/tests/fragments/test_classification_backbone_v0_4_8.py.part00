@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from zse_tool.classification_backbone import (
+    ClassificationError,
+    PageResult,
+    SchemeSpec,
+    _cpa_to_nace_code,
+    _level_from_code,
+    _normalize_scheme,
+    _parse_sparql_json,
+    _validate_https_endpoint,
+    _write_database,
+    search,
+    show_code,
+    status,
+)
+
+
+def _binding(value: str, *, lang: str | None = None, kind: str = "literal") -> dict[str, str]:
+    out = {"type": kind, "value": value}
+    if lang:
+        out["xml:lang"] = lang
+    return out
+
+
+def _page(rows: list[dict]) -> list[PageResult]:
+    return [PageResult(rows=rows, raw_path="raw.json", sha256="0" * 64)]
+
+
+def _normalized_nace() -> dict:
+    spec = SchemeSpec("NACE_REV_2_1", "NACE", "2.1", "nace", 4, 4)
+    items = [
+        {"concept": _binding("urn:nace:C", kind="uri"), "code": _binding("C")},
+        {"concept": _binding("urn:nace:27", kind="uri"), "code": _binding("27"), "parent": _binding("urn:nace:C", ki

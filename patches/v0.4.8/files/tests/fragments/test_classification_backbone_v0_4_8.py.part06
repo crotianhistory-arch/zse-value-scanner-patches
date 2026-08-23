@@ -1,0 +1,19 @@
+ps://publications.europa.eu/webapi/rdf/sparql", [_normalized_nace(), _normalized_cpa()], retrieved_at="2026-08-23T15:00:00Z", replace=False)
+
+
+def test_database_creates_cpa_to_nace_links(tmp_path: Path):
+    db = tmp_path / "reference.sqlite"
+    result = _write_database(db, "https://publications.europa.eu/webapi/rdf/sparql", [_normalized_nace(), _normalized_cpa()], retrieved_at="2026-08-23T15:00:00Z", replace=False)
+    assert result["structural_link_count"] == 6
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute("SELECT source_code, target_code FROM classification_links ORDER BY source_code").fetchall()
+    finally:
+        conn.close()
+    assert ("27.11.11", "27.11") in rows
+
+
+def test_multilingual_local_search_needs_no_network(tmp_path: Path):
+    db = tmp_path / "reference.sqlite"
+    _write_database(db, "https://publications.europa.eu/webapi/rdf/sparql", [_normalized_nace(), _normalized_cpa()], retrieved_at="2026-08-23T15:00:00Z", replace=False)
+    rows = search(db, "Transformatoren",

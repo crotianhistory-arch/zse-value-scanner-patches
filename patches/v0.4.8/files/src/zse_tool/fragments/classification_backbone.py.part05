@@ -1,0 +1,96 @@
+nn.executemany(
+        """
+        INSERT INTO classification_links (
+            source_scheme_key, source_code, target_scheme_key, target_code,
+            relation, evidence_class, rationale
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        links,
+    )
+    return len(links)
+
+
+def _write_database(
+    output_db: Path,
+    endpoint: str,
+    normalized_schemes: list[dict[str, Any]],
+    *,
+    retrieved_at: str,
+    replace: bool,
+) -> dict[str, Any]:
+    output_db = output_db.expanduser().resolve()
+    output_db.parent.mkdir(parents=True, exist_ok=True)
+    if output_db.exists() and not replace:
+        raise ClassificationError(f"output database already exists; pass --replace explicitly: {output_db}")
+
+    tmp = output_db.with_suffix(output_db.suffix + f".tmp-{os.getpid()}")
+    if tmp.exists():
+        tmp.unlink()
+    conn = sqlite3.connect(tmp)
+    try:
+        _create_schema(conn)
+        conn.execute("INSERT INTO metadata(key, value) VALUES (?, ?)", ("schema_version", SCHEMA_VERSION))
+        conn.execute("INSERT INTO metadata(key, value) VALUES (?, ?)", ("retrieved_at", retrieved_at))
+        conn.execute("INSERT INTO metadata(key, value) VALUES (?, ?)", ("source_endpoint", endpoint))
+
+        for normalized in normalized_schemes:
+            scheme = normalized["scheme"]
+            conn.execute(
+                """
+                INSERT INTO classification_schemes (
+                    scheme_key, system, version, scheme_uri, source_endpoint, retrieved_at,
+                    item_count, label_count, note_count, languages_json, normalized_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scheme["key"],
+                    scheme["system"],
+                    scheme["version"],
+                    scheme["scheme_uri"],
+                    endpoint,
+                    retrieved_at,
+                    scheme["item_count"],
+                    scheme["label_count"],
+                    scheme["note_count"],
+                    json.dumps(scheme["languages"], ensure_ascii=False),
+                    scheme["normalized_sha256"],
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO classification_items(scheme_key, code, uri, parent_code, level) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (scheme["key"], row["code"], row["uri"], row["parent_code"], row["level"])
+                    for row in normalized["items"]
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO classification_labels(scheme_key, code, language, kind, label) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (scheme["key"], row["code"], row["language"], row["kind"], row["label"])
+                    for row in normalized["labels"]
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO classification_notes(scheme_key, code, language, kind, text) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (scheme["key"], row["code"], row["language"], row["kind"], row["text"])
+                    for row in normalized["notes"]
+                ],
+            )
+        structural_links = _insert_structural_links(conn)
+        conn.execute("INSERT INTO metadata(key, value) VALUES (?, ?)", ("structural_link_count", str(structural_links)))
+        conn.commit()
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise ClassificationError(f"reference database integrity_check failed: {integrity}")
+    finally:
+        conn.close()
+
+    os.replace(tmp, output_db)
+    digest = _sha256_bytes(output_db.read_bytes())
+    return {"output_db": str(output_db), "sha256": digest, "structural_link_count": structural_links}
+
+
+def sync(catalog: Path, output_db: Path, raw_dir: Path, *, replace: bool = False) -> dict[str, Any]:
+    endpoint, specs = _catalog_from_path(catalog)
+    ra

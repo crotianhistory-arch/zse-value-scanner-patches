@@ -1,0 +1,26 @@
+2004/02/skos/core#prefLabel", kind="uri"),
+            "label": _binding(f"CPA label {code}", lang="en"),
+        })
+    return _normalize_scheme(spec, "urn:cpa:scheme", _page(items), _page(labels), _page([]))
+
+
+def test_level_parser_supports_nace_and_cpa_shapes():
+    assert [_level_from_code(x) for x in ["C", "27", "27.1", "27.11", "27.11.1", "27.11.11"]] == [1, 2, 3, 4, 5, 6]
+
+
+def test_level_parser_rejects_unknown_shape():
+    with pytest.raises(ClassificationError):
+        _level_from_code("2711")
+
+
+def test_endpoint_is_https_and_allowlisted():
+    _validate_https_endpoint("https://publications.europa.eu/webapi/rdf/sparql")
+    with pytest.raises(ClassificationError):
+        _validate_https_endpoint("http://publications.europa.eu/webapi/rdf/sparql")
+    with pytest.raises(ClassificationError):
+        _validate_https_endpoint("https://example.com/sparql")
+
+
+def test_sparql_json_parser_is_strict():
+    data = json.dumps({"results": {"bindings": [{"x": _binding("ok")} ]}}).encode()
+    assert len(_parse_

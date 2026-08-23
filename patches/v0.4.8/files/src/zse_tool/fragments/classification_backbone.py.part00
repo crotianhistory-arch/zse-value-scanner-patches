@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+from urllib.parse import urlencode, urlparse
+from urllib.request import Request, urlopen
+
+SCHEMA_VERSION = "official-classification-backbone-v0.1"
+ALLOWED_ENDPOINT_HOSTS = {"publications.europa.eu"}
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+DEFAULT_PAGE_SIZE = 5000
+DEFAULT_MAX_PAGES = 200
+
+SKOS = "http://www.w3.org/2004/02/skos/core#"
+XKOS = "http://rdf-vocabulary.ddialliance.org/xkos#"
+OWL = "http://www.w3.org/2002/07/owl#"
+
+
+class ClassificationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class SchemeSpec:
+    key: str
+    system: str
+    version: str
+    label_contains: str
+    expected_item_count: int
+    expected_levels: int
+
+
+@dataclass(frozen=True)
+class PageResult:
+    rows: list[dict[str, Any]]
+    raw_path: str
+    sha256: str
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_json_bytes(obj: Any) -> bytes:
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _validate_https_endpoint(endpoint: str) -> None:
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https":
+        raise ClassificationError("classification endpoint must use HTTPS")
+    if parsed.username or parsed.password:
+        raise ClassificationError("classification endpoint credentials are not allowed")
+    if parsed.port not in (None, 443):
+        raise ClassificationError("unexpected classification endpoint port")
+    if parsed.hostname not in ALLOWED_ENDPOINT_HOSTS:
+        raise ClassificationError(f"classification endpoint host is not allow-listed: {parsed.hostname}")
+
+
+def _read_bounded(response: Any, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(min(1024 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ClassificationError(f"SPARQL response exceeds {max_bytes} bytes")
+    return b"".join(chunks)
+
+
+def _safe_component(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "item"
+
+
+def _write_raw(raw_dir: Path, scheme_key: str, query_kind: str, page: int, data: bytes) -> tuple[str, str]:
+    digest = _sha256_bytes(data)
+    dst_dir = raw_dir / _safe_component(scheme_key) / _safe_component(query_kind)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    path = dst_dir / f"page-{page:04d}-{digest}.json"
+    if not path.exists():
+        tmp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    return str(path), digest
+
+
+def _binding_value(binding: dict[str, Any], key: str) -> str | None:
+    value = binding.get(key)
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("value")
+    if raw is None:
+        return None
+    return str(raw)
+
+
+def _binding_lang(binding: dict[str, Any], key: str) -> str:
+    value = binding.get(key)
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get("xml:lang") or value.get("lang") or "")
+
+
+def _sparql_request(endpoint: str, query: str, *, timeout: float = 45.0) -> bytes:
+    _validate_https_endpoint(endpoint)
+    payload = urlencode({"query": query}).encode("utf-8")
+    request = Request(
+        endpoint,
+        data=payload,
+        method="POST",
+        headers={
+            "Accept": "application/sparql-results+json",
+            "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+            "User-Agent": "zse-value-scanner/0.4.8 classificatio

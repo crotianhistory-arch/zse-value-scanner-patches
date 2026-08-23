@@ -1,0 +1,20 @@
+ print(f"SHA256: {result['sha256']}")
+                print(f"Raw manifest: {result['source_manifest']}")
+                for s in result["schemes"]:
+                    print(
+                        f"  {s['key']}: {s['item_count']} items | {s['label_count']} labels | "
+                        f"{s['note_count']} notes | {len(s['languages'])} languages"
+                    )
+                print(f"CPA→NACE structural links: {result['structural_link_count']}")
+                print("Core metadata database was not modified.")
+            return 0
+        if args.command == "status":
+            result = status(args.db)
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True) if args.json else "", end="")
+            if not args.json:
+                _print_status(result)
+            return 0
+        if args.command == "search":
+            result = search(args.db, args.term, language=args.language, limit=args.limit)
+            if args.json:
+                print(json.dumps(result

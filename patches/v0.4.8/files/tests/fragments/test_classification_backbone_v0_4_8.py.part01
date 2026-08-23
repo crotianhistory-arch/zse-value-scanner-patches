@@ -1,0 +1,13 @@
+nd="uri")},
+        {"concept": _binding("urn:nace:27.1", kind="uri"), "code": _binding("27.1"), "parent": _binding("urn:nace:27", kind="uri")},
+        {"concept": _binding("urn:nace:27.11", kind="uri"), "code": _binding("27.11"), "parent": _binding("urn:nace:27.1", kind="uri")},
+    ]
+    labels = []
+    for code, text in [("C", "Manufacturing"), ("27", "Electrical equipment"), ("27.1", "Motors and transformers"), ("27.11", "Manufacture of transformers")]:
+        uri = f"urn:nace:{code}"
+        labels.extend([
+            {"concept": _binding(uri, kind="uri"), "code": _binding(code), "labelKind": _binding("http://www.w3.org/2004/02/skos/core#prefLabel", kind="uri"), "label": _binding(text, lang="en")},
+            {"concept": _binding(uri, kind="uri"), "code": _binding(code), "labelKind": _binding("http://www.w3.org/2004/02/skos/core#altLabel", kind="uri"), "label": _binding("Transformatoren" if code == "27.11" else text, lang="de")},
+        ])
+    notes = [
+        {"concept": _binding("urn:nace:27.11",

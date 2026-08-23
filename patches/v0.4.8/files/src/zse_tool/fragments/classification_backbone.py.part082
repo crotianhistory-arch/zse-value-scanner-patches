@@ -1,0 +1,20 @@
+, indent=2, ensure_ascii=False, sort_keys=True))
+            else:
+                for r in result:
+                    print(f"{r['scheme_key']} {r['code']} [{r['language'] or '-'}] {r['label']}")
+            return 0
+        if args.command == "show":
+            result = show_code(args.db, args.scheme, args.code)
+            if result is None:
+                print(f"not found: {args.scheme} {args.code}", file=sys.stderr)
+                return 4
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+            return 0
+    except (ClassificationError, OSError, sqlite3.Error, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

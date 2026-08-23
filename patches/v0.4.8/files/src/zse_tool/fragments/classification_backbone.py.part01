@@ -1,0 +1,99 @@
+n-backbone",
+        },
+    )
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=timeout) as response:  # nosec B310 - endpoint is validated above
+                status = getattr(response, "status", 200)
+                if status != 200:
+                    raise ClassificationError(f"SPARQL endpoint returned HTTP {status}")
+                return _read_bounded(response)
+        except Exception as exc:  # network boundary; re-raised with context
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    raise ClassificationError(f"SPARQL request failed after retries: {last_error}")
+
+
+def _parse_sparql_json(data: bytes) -> list[dict[str, Any]]:
+    try:
+        obj = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ClassificationError(f"invalid SPARQL JSON: {exc}") from exc
+    rows = obj.get("results", {}).get("bindings")
+    if not isinstance(rows, list):
+        raise ClassificationError("SPARQL JSON missing results.bindings")
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _paged_query(
+    endpoint: str,
+    base_query: str,
+    *,
+    raw_dir: Path,
+    scheme_key: str,
+    query_kind: str,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int = DEFAULT_MAX_PAGES,
+) -> list[PageResult]:
+    if page_size < 1 or page_size > 10000:
+        raise ClassificationError("page_size must be between 1 and 10000")
+    if max_pages < 1 or max_pages > 1000:
+        raise ClassificationError("max_pages must be between 1 and 1000")
+
+    results: list[PageResult] = []
+    for page in range(max_pages):
+        query = f"{base_query}\nLIMIT {page_size}\nOFFSET {page * page_size}"
+        data = _sparql_request(endpoint, query)
+        raw_path, digest = _write_raw(raw_dir, scheme_key, query_kind, page, data)
+        rows = _parse_sparql_json(data)
+        results.append(PageResult(rows=rows, raw_path=raw_path, sha256=digest))
+        if len(rows) < page_size:
+            return results
+    raise ClassificationError(f"{scheme_key}/{query_kind} exceeded max_pages={max_pages}")
+
+
+def _catalog_from_path(path: Path) -> tuple[str, list[SchemeSpec]]:
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    if obj.get("schema_version") != "official-classification-catalog-v0.1":
+        raise ClassificationError("unsupported classification catalog schema")
+    endpoint = str(obj.get("endpoint") or "")
+    _validate_https_endpoint(endpoint)
+    specs: list[SchemeSpec] = []
+    for item in obj.get("schemes") or []:
+        specs.append(
+            SchemeSpec(
+                key=str(item["key"]),
+                system=str(item["system"]),
+                version=str(item["version"]),
+                label_contains=str(item["label_contains"]),
+                expected_item_count=int(item["expected_item_count"]),
+                expected_levels=int(item["expected_levels"]),
+            )
+        )
+    if not specs:
+        raise ClassificationError("classification catalog has no schemes")
+    if len({s.key for s in specs}) != len(specs):
+        raise ClassificationError("duplicate scheme key in catalog")
+    return endpoint, specs
+
+
+def _resolve_scheme_uri(endpoint: str, spec: SchemeSpec, raw_dir: Path) -> tuple[str, list[dict[str, Any]]]:
+    needle = spec.label_contains.replace('"', '\\"')
+    version = spec.version.replace('"', '\\"')
+    query = f"""
+PREFIX skos: <{SKOS}>
+PREFIX owl: <{OWL}>
+SELECT DISTINCT ?scheme ?label ?version WHERE {{
+  ?scheme a skos:ConceptScheme .
+  OPTIONAL {{ ?scheme skos:prefLabel ?label . }}
+  OPTIONAL {{ ?scheme owl:versionInfo ?version . }}
+  FILTER(CONTAINS(LCASE(STR(?label)), LCASE(\"{needle}\")))
+  FILTER(CONTAINS(LCASE(CONCAT(STR(?label), \" \" , STR(?version))), LCASE(\"{version}\")))
+}}
+ORDER BY ?scheme
+""".strip()
+    data = _sparql_request(endpoint, query)
+    raw_path, digest = _write_raw(raw_dir, spec.key, "scheme-discovery", 0, data)
+    

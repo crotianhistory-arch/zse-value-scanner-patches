@@ -1,0 +1,15 @@
+ language="de")
+    assert rows[0]["code"] == "27.11"
+    assert rows[0]["system"] == "NACE"
+
+
+def test_status_and_show_code_preserve_provenance_and_links(tmp_path: Path):
+    db = tmp_path / "reference.sqlite"
+    _write_database(db, "https://publications.europa.eu/webapi/rdf/sparql", [_normalized_nace(), _normalized_cpa()], retrieved_at="2026-08-23T15:00:00Z", replace=False)
+    s = status(db)
+    assert s["metadata"]["schema_version"] == "official-classification-backbone-v0.1"
+    assert {x["key"] for x in s["schemes"]} == {"NACE_REV_2_1", "CPA_2_2"}
+    shown = show_code(db, "CPA_2_2", "27.11.11")
+    assert shown is not None
+    assert shown["outbound_links"][0]["target_code"] == "27.11"
+    assert shown["outbound_links"][0]["evidence_class"] == "D1_DETERMINISTIC_FROM_OFFICIAL_STRUCTURE"

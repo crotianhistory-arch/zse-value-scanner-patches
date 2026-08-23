@@ -1,0 +1,24 @@
+sparql_json(data)) == 1
+    with pytest.raises(ClassificationError):
+        _parse_sparql_json(b"{}")
+
+
+def test_normalization_preserves_multilingual_labels_and_parent_codes():
+    normalized = _normalized_nace()
+    assert normalized["scheme"]["item_count"] == 4
+    assert normalized["scheme"]["languages"] == ["de", "en"]
+    item = next(x for x in normalized["items"] if x["code"] == "27.11")
+    assert item["parent_code"] == "27.1"
+    assert any(x["language"] == "de" and x["label"] == "Transformatoren" for x in normalized["labels"])
+
+
+def test_normalization_requires_exact_official_item_count():
+    spec = SchemeSpec("NACE_REV_2_1", "NACE", "2.1", "nace", 5, 4)
+    with pytest.raises(ClassificationError, match="expected 5 items"):
+        _normalize_scheme(spec, "urn:nace:scheme", _page(_normalized_items_for_count()), _page(_normalized_labels_for_count()), _page([]))
+
+
+def _normalized_items_for_count():
+    return [
+        {"concept": _binding(f"urn:x:{code}", kind="uri"), "code": _binding(code)}
+        

@@ -1,0 +1,103 @@
+by_uri)}"
+        )
+
+    labels: list[dict[str, str]] = []
+    label_seen: set[tuple[str, str, str, str]] = set()
+    for row in _rows_from_pages(label_pages):
+        uri = _binding_value(row, "concept")
+        code = _binding_value(row, "code")
+        kind_uri = _binding_value(row, "labelKind")
+        label = _binding_value(row, "label")
+        if not uri or not code or not kind_uri or label is None:
+            continue
+        if uri not in items_by_uri:
+            raise ClassificationError(f"label references unknown concept: {uri}")
+        lang = _binding_lang(row, "label")
+        kind = _predicate_short(kind_uri)
+        key = (code, lang, kind, label)
+        if key not in label_seen:
+            label_seen.add(key)
+            labels.append({"code": code, "language": lang, "kind": kind, "label": label})
+
+    notes: list[dict[str, str]] = []
+    note_seen: set[tuple[str, str, str, str]] = set()
+    for row in _rows_from_pages(note_pages):
+        uri = _binding_value(row, "concept")
+        code = _binding_value(row, "code")
+        kind_uri = _binding_value(row, "noteKind")
+        note = _binding_value(row, "note")
+        if not uri or not code or not kind_uri or note is None:
+            continue
+        if uri not in items_by_uri:
+            raise ClassificationError(f"note references unknown concept: {uri}")
+        lang = _binding_lang(row, "note")
+        kind = _predicate_short(kind_uri)
+        key = (code, lang, kind, note)
+        if key not in note_seen:
+            note_seen.add(key)
+            notes.append({"code": code, "language": lang, "kind": kind, "text": note})
+
+    items: list[dict[str, Any]] = []
+    for uri, item in items_by_uri.items():
+        parent_uri = item.get("parent_uri")
+        parent_code = None
+        if parent_uri:
+            parent = items_by_uri.get(parent_uri)
+            if parent is None:
+                raise ClassificationError(f"parent is outside scheme for {item['code']}: {parent_uri}")
+            parent_code = parent["code"]
+        level = _level_from_code(item["code"])
+        if level > spec.expected_levels:
+            raise ClassificationError(f"{spec.key} code exceeds expected levels: {item['code']}")
+        items.append(
+            {
+                "code": item["code"],
+                "uri": uri,
+                "parent_code": parent_code,
+                "level": level,
+            }
+        )
+    items.sort(key=lambda x: (x["level"], x["code"]))
+    labels.sort(key=lambda x: (x["code"], x["language"], x["kind"], x["label"]))
+    notes.sort(key=lambda x: (x["code"], x["language"], x["kind"], x["text"]))
+
+    english_codes = {
+        row["code"] for row in labels if row["language"].lower().startswith("en")
+    }
+    missing_english = sorted(set(code_to_uri) - english_codes)
+    if missing_english:
+        raise ClassificationError(
+            f"{spec.key} has {len(missing_english)} codes without an English label; first={missing_english[:5]}"
+        )
+
+    languages = sorted({row["language"] for row in labels if row["language"]})
+    digest_payload = {"scheme_uri": scheme_uri, "items": items, "labels": labels, "notes": notes}
+    return {
+        "scheme": {
+            "key": spec.key,
+            "system": spec.system,
+            "version": spec.version,
+            "scheme_uri": scheme_uri,
+            "item_count": len(items),
+            "label_count": len(labels),
+            "note_count": len(notes),
+            "languages": languages,
+            "normalized_sha256": _sha256_bytes(_canonical_json_bytes(digest_payload)),
+        },
+        "items": items,
+        "labels": labels,
+        "notes": notes,
+    }
+
+
+def _create_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE classification_schemes (
+            scheme_key TEXT PRIMARY KEY,
+            sy

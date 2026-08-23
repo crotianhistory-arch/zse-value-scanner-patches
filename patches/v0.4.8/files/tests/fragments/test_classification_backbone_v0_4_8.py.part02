@@ -1,0 +1,27 @@
+ kind="uri"), "code": _binding("27.11"), "noteKind": _binding("http://rdf-vocabulary.ddialliance.org/xkos#coreContentNote", kind="uri"), "note": _binding("Includes transformer manufacturing.", lang="en")}
+    ]
+    return _normalize_scheme(spec, "urn:nace:scheme", _page(items), _page(labels), _page(notes))
+
+
+def _normalized_cpa() -> dict:
+    spec = SchemeSpec("CPA_2_2", "CPA", "2.2", "cpa", 6, 6)
+    rows = [
+        ("C", None),
+        ("27", "C"),
+        ("27.1", "27"),
+        ("27.11", "27.1"),
+        ("27.11.1", "27.11"),
+        ("27.11.11", "27.11.1"),
+    ]
+    items = []
+    labels = []
+    for code, parent in rows:
+        uri = f"urn:cpa:{code}"
+        row = {"concept": _binding(uri, kind="uri"), "code": _binding(code)}
+        if parent:
+            row["parent"] = _binding(f"urn:cpa:{parent}", kind="uri")
+        items.append(row)
+        labels.append({
+            "concept": _binding(uri, kind="uri"),
+            "code": _binding(code),
+            "labelKind": _binding("http://www.w3.org/

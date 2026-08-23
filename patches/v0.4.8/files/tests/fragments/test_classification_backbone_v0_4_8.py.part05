@@ -1,0 +1,24 @@
+for code in ["A", "01", "01.1", "01.11"]
+    ]
+
+
+def _normalized_labels_for_count():
+    return [
+        {"concept": _binding(f"urn:x:{code}", kind="uri"), "code": _binding(code), "labelKind": _binding("http://www.w3.org/2004/02/skos/core#prefLabel", kind="uri"), "label": _binding(code, lang="en")}
+        for code in ["A", "01", "01.1", "01.11"]
+    ]
+
+
+def test_cpa_structural_origin_mapping():
+    assert _cpa_to_nace_code("27.11", 4) == "27.11"
+    assert _cpa_to_nace_code("27.11.1", 5) == "27.11"
+    assert _cpa_to_nace_code("27.11.11", 6) == "27.11"
+
+
+def test_database_build_is_atomic_and_requires_explicit_replace(tmp_path: Path):
+    db = tmp_path / "reference.sqlite"
+    result = _write_database(db, "https://publications.europa.eu/webapi/rdf/sparql", [_normalized_nace(), _normalized_cpa()], retrieved_at="2026-08-23T15:00:00Z", replace=False)
+    assert db.exists()
+    assert len(result["sha256"]) == 64
+    with pytest.raises(ClassificationError, match="already exists"):
+        _write_database(db, "htt
