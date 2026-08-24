@@ -17,17 +17,44 @@ def _code(v: Any) -> str | None:
     return m.group(1).zfill(4) if m else None
 
 
-def _headers(ws: Any) -> tuple[int,int,int,int|None,int|None] | None:
-    best = None
-    for row in range(1, min(ws.max_row, 30) + 1):
-        vals = {c:_h(ws.cell(row,c).value) for c in range(1, min(ws.max_column,40)+1)}
-        a=[c for c,t in vals.items() if "isic" in t and ("rev 4" in t or "rev4" in t) and "code" in t and "title" not in t]
-        b=[c for c,t in vals.items() if "isic" in t and ("rev 5" in t or "rev5" in t) and "code" in t and "title" not in t]
-        if a and b:
-            change=next((c for c,t in vals.items() if ("change" in t or "gsim" in t) and ("type" in t or "category" in t)),None)
-            note=next((c for c,t in vals.items() if ("description" in t or "note" in t) and ("change" in t or "content" in t)),None)
-            best=(row+1,a[0],b[0],change,note); break
-    return best
+def _headers(ws: Any) -> tuple[int, int, int, int | None, int | None] | None:
+    # Official statistical workbooks often use merged or multi-row headers.
+    # Search 1-3 adjacent rows and combine the visible text by column rather
+    # than baking one workbook layout into the adapter.
+    max_row = min(ws.max_row, 30)
+    max_col = min(ws.max_column, 40)
+    for start in range(1, max_row + 1):
+        for span in (1, 2, 3):
+            if start + span - 1 > max_row:
+                continue
+            vals = {}
+            for c in range(1, max_col + 1):
+                parts = [_h(ws.cell(r, c).value) for r in range(start, start + span)]
+                vals[c] = " ".join(x for x in parts if x)
+            a = [
+                c for c, t in vals.items()
+                if "isic" in t and ("rev 4" in t or "rev4" in t)
+                and "code" in t and "title" not in t
+            ]
+            b = [
+                c for c, t in vals.items()
+                if "isic" in t and ("rev 5" in t or "rev5" in t)
+                and "code" in t and "title" not in t
+            ]
+            if not a or not b:
+                continue
+            change = next((
+                c for c, t in vals.items()
+                if ("change" in t or "gsim" in t)
+                and ("type" in t or "category" in t)
+            ), None)
+            note = next((
+                c for c, t in vals.items()
+                if ("description" in t or "note" in t)
+                and ("change" in t or "content" in t)
+            ), None)
+            return start + span, a[0], b[0], change, note
+    return None
 
 
 def parse_unsd_isic_rev4_rev5_xlsx(data: bytes) -> list[dict[str,Any]]:
