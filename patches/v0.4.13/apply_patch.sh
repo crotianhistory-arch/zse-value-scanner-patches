@@ -30,6 +30,8 @@ cp "$TARGET/pyproject.toml" "$BACKUP/pyproject.toml"
 
 install -m 0644 files/src/zse_tool/classification_crosswalk.py \
     "$TARGET/src/zse_tool/classification_crosswalk.py"
+install -m 0644 files/src/zse_tool/classification_crosswalk_unsd.py \
+    "$TARGET/src/zse_tool/classification_crosswalk_unsd.py"
 install -m 0644 files/tests/test_classification_crosswalk_v0_4_13.py \
     "$TARGET/tests/test_classification_crosswalk_v0_4_13.py"
 install -m 0644 files/examples/official_crosswalk_catalog_v0_4_13.json \
@@ -54,6 +56,7 @@ PY
 
 python -m py_compile \
     "$TARGET/src/zse_tool/classification_crosswalk.py" \
+    "$TARGET/src/zse_tool/classification_crosswalk_unsd.py" \
     "$TARGET/tests/test_classification_crosswalk_v0_4_13.py"
 
 grep '^version' "$TARGET/pyproject.toml"
