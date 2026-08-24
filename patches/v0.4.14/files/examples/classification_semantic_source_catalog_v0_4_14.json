@@ -1,0 +1,19 @@
+{
+  "schema_version": "classification-semantic-source-catalog-v0.1",
+  "sources": [
+    {
+      "provider": "United Nations Statistics Division",
+      "adapter": "unsd-isic-detail-html",
+      "system": "ISIC",
+      "version": "4",
+      "url_template": "https://unstats.un.org/unsd/classifications/Econ/Detail/EN/27/{code}"
+    },
+    {
+      "provider": "United Nations Statistics Division",
+      "adapter": "unsd-isic-detail-html",
+      "system": "ISIC",
+      "version": "5",
+      "url_template": "https://unstats.un.org/unsd/classifications/Econ/Structure/Detail/EN/2095/{code}"
+    }
+  ]
+}
