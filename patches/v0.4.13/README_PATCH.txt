@@ -13,12 +13,14 @@ This patch adds:
 - reverse traversal of official correspondence edges;
 - a separate E1 empirical company co-classification evidence table;
 - raw source preservation and SHA-256 provenance;
-- 10 regression tests including an unrelated food-sector anti-overfitting case.
+- 11 regression tests including an unrelated food-sector anti-overfitting case and the real UNSD dual-code-column workbook shape.
 
 Important boundaries:
 - official correspondence rows remain O1_OFFICIAL_CROSSWALK;
 - company observations remain E1_EMPIRICAL_CROSS_SYSTEM_EVIDENCE;
 - empirical observations never overwrite or promote themselves into official edges;
 - existing A3 analytical activity mappings remain separate;
+- the UNSD adapter explicitly prefers four-digit numerical class-code columns over alphanumerical helper-code columns;
 - installation performs no network access and no database writes;
-- live sync writes only to the explicitly supplied crosswalk DB/raw directory.
+- live sync writes only to the explicitly supplied crosswalk DB/raw directory;
+- re-applying v0.4.13 to an uncommitted v0.4.13 retry state is supported and backs up touched files first.
