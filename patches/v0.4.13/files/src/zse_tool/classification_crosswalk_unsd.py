@@ -33,12 +33,12 @@ def _headers(ws: Any) -> tuple[int, int, int, int | None, int | None] | None:
                 vals[c] = " ".join(x for x in parts if x)
             a = [
                 c for c, t in vals.items()
-                if "isic" in t and ("rev 4" in t or "rev4" in t)
+                if "isic" in t and ("rev 4" in t or "rev4" in t or "revision 4" in t or "revision4" in t)
                 and "code" in t and "title" not in t
             ]
             b = [
                 c for c, t in vals.items()
-                if "isic" in t and ("rev 5" in t or "rev5" in t)
+                if "isic" in t and ("rev 5" in t or "rev5" in t or "revision 5" in t or "revision5" in t)
                 and "code" in t and "title" not in t
             ]
             if not a or not b:
